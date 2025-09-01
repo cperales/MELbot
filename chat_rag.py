@@ -8,7 +8,7 @@ import re
 MODEL_ID = "IIC/MEL"  # encoder legal español
 tok = AutoTokenizer.from_pretrained(MODEL_ID)
 enc = AutoModel.from_pretrained(MODEL_ID)
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+device = torch.device('cuda')
 enc = enc.to(device)
 
 def embed(texts: list[str]) -> np.ndarray:
@@ -57,12 +57,21 @@ def chunk_text(text, max_length=250, overlap=50):
         chunks.append('. '.join(current_chunk) + '.')
     return chunks
 
-docs = []
-for i, section in enumerate(sections):
-    print(f"Processing section {i+1}/{len(sections)}")
-    chunks = chunk_text(section)
-    print(f"Split into {len(chunks)} chunks")
-    docs.extend(chunk_text(section))
+DOCS_PATH = "data/chunks.tx"
+if os.path.exists(DOCS_PATH):
+    print("Loading preprocessed chunks...")
+    with open(DOCS_PATH, "r", encoding="utf-8") as f:
+        docs = [line.strip() for line in f if line.strip()]
+else:
+    docs = []
+    for i, section in enumerate(sections):
+        print(f"Processing section {i+1}/{len(sections)}")
+        chunks = chunk_text(section)
+        print(f"Split into {len(chunks)} chunks")
+        docs.extend(chunks)
+    with open(DOCS_PATH, "w", encoding="utf-8") as f:
+        for doc in docs:
+            f.write(doc.replace("\n", " ").strip() + "\n")
 
 os.makedirs("data", exist_ok=True)
 INDEX_PATH = "data/law_index.faiss"
@@ -92,27 +101,49 @@ def retrieve(query, k=10):
 def generate(prompt):
     resp = requests.post('http://localhost:11434/api/generate',
                         json={
-                            "model": "llama3:latest",
+                            "model": "mistral:7b",
                             "prompt": prompt,
                             "stream": False
                         })
-    return resp.json()["response"]
+    try:
+        return resp.json()['response']
+    except Exception as e:
+        print(e)
+        print(resp.text)
+        raise e
+
 
 def answer(question):
-    hits = retrieve(question, k=4)
+    hits = retrieve(question, k=10)
     context = "\n\n".join([f"[{j+1}] {t}" for j,(t,_) in enumerate(hits)])
     prompt = f"""Eres un asistente jurídico. Tienes un contexto generado por un LLM entrenado con textos jurídicos. Usa SOLO el CONTEXTO para responder en español,
 citando [n] tras cada afirmación. Si falta contexto, di que no puedes responder.
 
 PREGUNTA: {question}
 
-CONTEXTO LEGAL:
+CONTEXTO JURÍDICO:
 {context}
 """
-    return generate(prompt)
+    response = generate(prompt)
+    
+    # Find all citation numbers in response, including ranges like [1, 3, 4, 9]
+    citations = set()
+    for match in re.findall(r'\[([^\]]+)\]', response):
+        for n in re.split(r'[,\s]+', match):
+            if n.isdigit():
+                citations.add(int(n))
+    if any(n > len(hits) or n < 1 for n in citations):
+        response += "\n\nADVERTENCIA: La respuesta contiene referencias inválidas."
+    
+    if len(citations) != 0:
+        response += "\n\nReferencias:\n"
+        for cite in citations:
+            response += f"[{cite}], {hits[cite-1][0]}\n"
+    
+    return response
 
 
 if __name__ == '__main__':
-    question = "¿Por cuánto tiempo puedo renovar mi contrato de alquiler?"
+    question = "He firmado un contrato de alquiler de una vivienda por 1 año. ¿Por cuánto tiempo puedo renovar mi contrato de alquiler?"
     print(answer(question))
     
