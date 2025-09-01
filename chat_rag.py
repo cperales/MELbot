@@ -1,13 +1,18 @@
 # Embeddings con MEL (Hugging Face Transformers)
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoModelForCausalLM, AutoTokenizer, pipeline
+from transformers import AutoModel
 import torch, faiss, numpy as np
 import requests, os
 from PyPDF2 import PdfReader
 import re
 
-MODEL_ID = "IIC/MEL"  # encoder legal español
-tok = AutoTokenizer.from_pretrained(MODEL_ID)
-enc = AutoModel.from_pretrained(MODEL_ID)
+# MODEL_ID = "BSC-LT/salamandra-2b"
+MODEL_ID = "hdnh2006/salamandra-7b-instruct"
+USE_OLLAMA = True
+# MODEL_ID = "mistralai/Mixtral-8x7B-Instruct-v0.1"  # Quantized version
+EMB_ID = "IIC/MEL"  # encoder legal español
+tok = AutoTokenizer.from_pretrained(EMB_ID)
+enc = AutoModel.from_pretrained(EMB_ID)
 device = torch.device('cuda')
 enc = enc.to(device)
 
@@ -97,26 +102,51 @@ def retrieve(query, k=10):
     D, I = index.search(q, k)
     return [(docs[i], float(D[0][j])) for j,i in enumerate(I[0])]
 
-# Generación con Ollama + deepseek-r1
-def generate(prompt):
-    resp = requests.post('http://localhost:11434/api/generate',
-                        json={
-                            "model": "mistral:7b",
-                            "prompt": prompt,
-                            "stream": False
-                        })
+# Add this near the top of your file with other imports
+def setup_generator():
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+    pipe = pipeline(
+        "text-generation",
+        model=MODEL_ID,
+        tokenizer=tokenizer,
+        device=device,  # Uses the same device as your embeddings
+        max_length=2048,
+        do_sample=True,
+        temperature=0.7,
+    )
+    return pipe
+
+# Replace the existing generate function
+def generate(prompt, use_ollama: bool = False):
     try:
-        return resp.json()['response']
+        if use_ollama:
+            # Call Ollama API (assuming it's running locally)
+            url = "http://localhost:11434/api/generate"
+            payload = {
+            "model": MODEL_ID,  # or your desired model
+            "prompt": prompt,
+            "stream": False
+            }
+            resp = requests.post(url, json=payload)
+            resp.raise_for_status()
+            response = resp.json()["response"].strip()
+        else:
+            # Initialize only once
+            if not hasattr(generate, 'pipe'):
+                generate.pipe = setup_generator()
+            response = generate.pipe(prompt, max_new_tokens=512)[0]['generated_text']
+            # Remove the original prompt from response
+            response = response[len(prompt):].strip()
+        return response
     except Exception as e:
-        print(e)
-        print(resp.text)
+        print(f"Error generating response: {e}")
         raise e
 
 
 def answer(question):
     hits = retrieve(question, k=10)
     context = "\n\n".join([f"[{j+1}] {t}" for j,(t,_) in enumerate(hits)])
-    prompt = f"""Eres un asistente jurídico. Tienes un contexto generado por un LLM entrenado con textos jurídicos. Usa SOLO el CONTEXTO para responder en español,
+    prompt = f"""Eres un asistente jurídico. Tienes un contexto generado por un LLM entrenado con textos jurídicos. Usa el CONTEXTO para responder en español,
 citando [n] tras cada afirmación. Si falta contexto, di que no puedes responder.
 
 PREGUNTA: {question}
@@ -124,7 +154,7 @@ PREGUNTA: {question}
 CONTEXTO JURÍDICO:
 {context}
 """
-    response = generate(prompt)
+    response = generate(prompt, use_ollama=USE_OLLAMA)
     
     # Find all citation numbers in response, including ranges like [1, 3, 4, 9]
     citations = set()
@@ -146,4 +176,3 @@ CONTEXTO JURÍDICO:
 if __name__ == '__main__':
     question = "He firmado un contrato de alquiler de una vivienda por 1 año. ¿Por cuánto tiempo puedo renovar mi contrato de alquiler?"
     print(answer(question))
-    
