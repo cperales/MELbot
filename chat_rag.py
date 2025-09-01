@@ -7,7 +7,7 @@ from PyPDF2 import PdfReader
 import re
 
 # MODEL_ID = "BSC-LT/salamandra-2b"
-MODEL_ID = "hdnh2006/salamandra-7b-instruct"
+MODEL_ID = "llama3:latest"
 USE_OLLAMA = True
 # MODEL_ID = "mistralai/Mixtral-8x7B-Instruct-v0.1"  # Quantized version
 EMB_ID = "IIC/MEL"  # encoder legal español
